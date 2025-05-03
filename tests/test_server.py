@@ -13,7 +13,8 @@ from server import (
     add_shape,
     get_slide_content_description,
     get_slide_image,
-    SAVE_DIR
+    SAVE_DIR,
+    get_pptx_file,
 )
 
 # Define the test filename
@@ -178,6 +179,41 @@ async def test_get_slide_image():
         # Check that the image data starts with PNG signature
         assert image.data.startswith(b'\x89PNG\r\n\x1a\n'), "Image data should be a valid PNG file"
 
+    finally:
+        # --- Cleanup ---
+        if TEST_FILE_PATH.exists():
+            try:
+                os.remove(TEST_FILE_PATH)
+            except OSError as e:
+                print(f"Error removing test file {TEST_FILE_PATH}: {e}")
+
+@pytest.mark.asyncio
+async def test_get_pptx_file():
+    """
+    Tests if get_pptx_file returns a valid FileResource for a created presentation.
+    """
+    # Ensure the file doesn't exist before the test
+    if TEST_FILE_PATH.exists():
+        os.remove(TEST_FILE_PATH)
+
+    try:
+        # --- Setup ---
+        create_or_clear_presentation(TEST_FILENAME)
+
+        # --- Execute ---
+        resource = await get_pptx_file(TEST_FILENAME)
+
+        # --- Verify ---
+        # Check that the resource is a FileResource
+        from fastmcp.resources import FileResource
+        assert isinstance(resource, FileResource), "Returned resource is not a FileResource"
+        # Check that the file exists
+        assert resource.path.exists(), f"File {resource.path} does not exist"
+        # Check the mime type
+        assert resource.mime_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        # Check the file signature (PPTX files are zip files, start with PK\x03\x04)
+        file_bytes = resource.path.read_bytes()
+        assert file_bytes[:4] == b'PK\x03\x04', "PPTX file does not start with correct ZIP signature"
     finally:
         # --- Cleanup ---
         if TEST_FILE_PATH.exists():

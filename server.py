@@ -13,6 +13,7 @@ from pptx.util import Inches, Pt
 from pptx.enum.shapes import MSO_SHAPE
 
 from fastmcp import FastMCP, Image, Context
+from fastmcp.resources import FileResource
 
 # --- Configuration ---
 # Directory to store generated presentations
@@ -494,6 +495,24 @@ def get_slide_image(filename: str, slide_index: int) -> Image: # Changed slide_i
         except Exception as e:
              print(f"ERROR: Error reading PNG file {actual_png_path}: {e}", file=sys.stderr)
              raise RuntimeError(f"Failed to read generated PNG file: {e}")
+
+
+@mcp.resource("pptx://{filename}/file", mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+async def get_pptx_file(filename: str):
+    """
+    Provides the .pptx file for download as a binary resource.
+    """
+    path = _get_presentation_path(filename).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Presentation file '{filename}' not found.")
+    return FileResource(
+        uri=f"pptx://{filename}/file",
+        path=path,
+        is_binary=True,
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        name=f"PPTX file: {filename}",
+        description=f"Download the PowerPoint file '{filename}'."
+    )
 
 
 # --- MCP Prompts (same as before) ---
