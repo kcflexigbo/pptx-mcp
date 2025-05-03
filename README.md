@@ -40,7 +40,17 @@ Start the server:
 ```bash
 python server.py
 ```
-or (for development with FastMCP):
+
+You can set the server's host and port using environment variables:
+- `HOST` (default: `127.0.0.1`)
+- `PORT` (default: `8000`)
+
+For example, to run on all interfaces and port 9000:
+```bash
+HOST=0.0.0.0 PORT=9000 python server.py
+```
+
+Or (for development with FastMCP):
 ```bash
 fastmcp dev server.py
 ```

@@ -29,6 +29,11 @@ SOFFICE_PATH = None # e.g., "/usr/bin/soffice" or "C:\\Program Files\\LibreOffic
 # --- FastMCP Server Definition ---
 # NOTE: python-pptx is included, but LibreOffice CANNOT be installed via pip.
 # Deployment requires manual installation of LibreOffice on the host system.
+#
+# Server host/port can be set via HOST and PORT environment variables, defaulting to 127.0.0.1:8000
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8000"))
+
 mcp = FastMCP(
     "PowerPoint Creator 📊 (with Image Rendering)",
     dependencies=["python-pptx", "pillow"] # Added pillow dependency for Image helper
@@ -554,17 +559,13 @@ def available_shapes() -> str:
 if __name__ == "__main__":
     print(f"💾 Presentations will be saved in: {SAVE_DIR.resolve()}")
     print("-" * 30)
-    print("⚠️  WARNING: Image rendering (`/image.png` resource) requires LibreOffice.")
     try:
         soffice_path = _find_soffice()
         print(f"✅ Found LibreOffice executable: {soffice_path}")
-    except RuntimeError as e:
+    except Exception as e:
+        print("❌ Image rendering (`/image.png` resource) requires LibreOffice.")
         print(f"❌ {e}")
         print("   Image rendering resource will likely fail.")
     print("-" * 30)
-    print(f"🚀 Starting FastMCP server for PowerPoint generation...")
-    # Run with: python pptx_server.py
-    # Or dev:   fastmcp dev pptx_server.py
-    # Install:  fastmcp install pptx_server.py --name "PPTX Creator Tool"
-    #           (Remember to install LibreOffice manually on the target machine!)
-    mcp.run()
+    print(f"🚀 Starting FastMCP server for PowerPoint generation on {HOST}:{PORT}...")
+    mcp.run(transport="sse", host=HOST, port=PORT)
