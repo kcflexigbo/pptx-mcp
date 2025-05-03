@@ -5,6 +5,7 @@ import subprocess
 import sys # Import sys for stderr printing
 import tempfile
 import shutil # For finding soffice
+import base64 # <-- Add this import
 from pathlib import Path
 from typing import Optional, List
 
@@ -518,6 +519,28 @@ async def get_pptx_file(filename: str):
         name=f"PPTX file: {filename}",
         description=f"Download the PowerPoint file '{filename}'."
     )
+
+
+@mcp.tool()
+def get_presentation_file_b64(filename: str) -> str:
+    """
+    Returns the content of the presentation file encoded as a Base64 string.
+    Useful if the client cannot handle MCP resources or direct file paths.
+
+    Returns:
+        A Base64 encoded string representing the binary content of the .pptx file.
+    """
+    path = _get_presentation_path(filename)
+    if not path.exists():
+        raise FileNotFoundError(f"Presentation file '{filename}' not found on the server.")
+
+    try:
+        file_bytes = path.read_bytes()
+        base64_encoded_bytes = base64.b64encode(file_bytes)
+        base64_string = base64_encoded_bytes.decode('utf-8') # Decode bytes to string for JSON compatibility
+        return base64_string
+    except Exception as e:
+        raise IOError(f"Error reading or encoding file '{filename}': {e}")
 
 
 # --- MCP Prompts (same as before) ---
