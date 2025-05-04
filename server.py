@@ -7,11 +7,12 @@ import tempfile
 import shutil # For finding soffice
 import base64 # <-- Add this import
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Union, Tuple # <-- Add Tuple
 
 import pptx # Import the module directly
 from pptx.util import Inches, Pt
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
+from pptx.dml.color import RGBColor # <-- Add RGBColor
 
 from fastmcp import FastMCP, Image, Context
 from fastmcp.resources import FileResource
@@ -130,6 +131,12 @@ def _parse_shape_type(shape_name: str) -> MSO_SHAPE:
                          "FLOWCHART_DATA", "LINE_CALLOUT_1"] # etc.
         raise ValueError(f"Unknown shape type '{shape_name}'. Try one of: {', '.join(common_shapes)}...")
 
+def _get_shape_by_id(slide: pptx.slide.Slide, shape_id: int):
+    """Finds a shape on the slide by its unique ID."""
+    for shape in slide.shapes:
+        if shape.shape_id == shape_id:
+            return shape
+    raise ValueError(f"Shape with ID {shape_id} not found on slide {slide.slide_id}. Available IDs: {[s.shape_id for s in slide.shapes]}")
 
 # --- MCP Tools (Create, Add Slide, Add Elements - same as before) ---
 
@@ -273,7 +280,8 @@ def add_shape(
     """
     Adds an AutoShape (like RECTANGLE, OVAL, FLOWCHART_PROCESS) to a slide.
     Specify position and dimensions in inches. Optionally add text to the shape.
-    """
+    Returns a confirmation message including the unique ID of the created shape.
+    """ # Updated docstring
     prs = _load_presentation(filename)
     slide = _get_slide(prs, slide_index)
     shape_enum = _parse_shape_type(shape_type_name)
@@ -281,6 +289,8 @@ def add_shape(
     width, height = Inches(width_inches), Inches(height_inches)
 
     shape = slide.shapes.add_shape(shape_enum, left, top, width, height)
+    shape_id = shape.shape_id # Get the unique ID
+
     if text:
         tf = shape.text_frame
         # Handle multi-line text in shapes too
@@ -291,7 +301,224 @@ def add_shape(
         tf.word_wrap = True # Enable word wrap within the shape
 
     _save_presentation(prs, filename)
-    return f"Added shape '{shape_type_name}' to slide {slide_index} in '{filename}'."
+    # Include the shape_id in the return message
+    return f"Added shape '{shape_type_name}' (ID: {shape_id}) to slide {slide_index} in '{filename}'."
+
+@mcp.tool()
+def add_connector(
+    filename: str,
+    slide_index: int,
+    start_shape_id: int,
+    end_shape_id: int,
+    connector_type_name: str = "ELBOW", # Common default: STRAIGHT, ELBOW, CURVE
+    start_connection_point_idx: int = 3, # Default: Mid-right side for many shapes
+    end_connection_point_idx: int = 1,   # Default: Mid-left side for many shapes
+) -> str:
+    """
+    Adds a connector shape between two existing shapes identified by their IDs.
+    Defaults to an ELBOW connector from the right side of the start shape
+    to the left side of the end shape.
+
+    Args:
+        filename: The presentation filename.
+        slide_index: The 0-based index of the slide.
+        start_shape_id: The unique ID of the shape where the connector starts.
+        end_shape_id: The unique ID of the shape where the connector ends.
+        connector_type_name: Type of connector (e.g., "STRAIGHT", "ELBOW", "CURVE").
+        start_connection_point_idx: Index of the connection point on the start shape (0=center, 1-N=perimeter points).
+        end_connection_point_idx: Index of the connection point on the end shape.
+
+    Returns:
+        Confirmation message including the connector's shape ID.
+    """
+    prs = _load_presentation(filename)
+    slide = _get_slide(prs, slide_index)
+
+    # Find the start and end shapes
+    start_shape = _get_shape_by_id(slide, start_shape_id)
+    end_shape = _get_shape_by_id(slide, end_shape_id)
+
+    # Parse connector type
+    try:
+        connector_enum = getattr(MSO_CONNECTOR, connector_type_name.upper())
+    except AttributeError:
+        raise ValueError(f"Unknown connector type '{connector_type_name}'. Try: STRAIGHT, ELBOW, CURVE.")
+
+    # Add the connector shape (initial position doesn't matter much)
+    connector = slide.shapes.add_connector(
+        connector_enum, Inches(1), Inches(1), Inches(2), Inches(2) # Arbitrary start/end
+    )
+
+    # Connect the shapes
+    try:
+        connector.begin_connect(start_shape, start_connection_point_idx)
+    except Exception as e:
+        # Provide more context on error
+        print(f"Warning: Could not connect start of connector to shape {start_shape_id} at point {start_connection_point_idx}. Error: {e}. Ensure the connection point index is valid for the shape type.")
+        # Attempt to connect to center as fallback?
+        try:
+            print("Attempting fallback connection to center (point 0) for start shape.")
+            connector.begin_connect(start_shape, 0)
+        except Exception as e2:
+             print(f"Fallback connection to center also failed: {e2}")
+             # Proceed without connection if fallback fails, user might fix later
+
+    try:
+        connector.end_connect(end_shape, end_connection_point_idx)
+    except Exception as e:
+        print(f"Warning: Could not connect end of connector to shape {end_shape_id} at point {end_connection_point_idx}. Error: {e}. Ensure the connection point index is valid for the shape type.")
+        # Attempt to connect to center as fallback?
+        try:
+            print("Attempting fallback connection to center (point 0) for end shape.")
+            connector.end_connect(end_shape, 0)
+        except Exception as e2:
+            print(f"Fallback connection to center also failed: {e2}")
+            # Proceed without connection if fallback fails
+
+    _save_presentation(prs, filename)
+    connector_id = connector.shape_id
+    return f"Added {connector_type_name} connector (ID: {connector_id}) from shape {start_shape_id} (point {start_connection_point_idx}) to shape {end_shape_id} (point {end_connection_point_idx}) on slide {slide_index}."
+
+@mcp.tool()
+def delete_shape(filename: str, slide_index: int, shape_id: int) -> str:
+    """
+    Deletes a specific shape from a slide using its unique ID.
+
+    Args:
+        filename: The presentation filename.
+        slide_index: The 0-based index of the slide.
+        shape_id: The unique ID of the shape to delete.
+
+    Returns:
+        Confirmation message.
+    """
+    prs = _load_presentation(filename)
+    slide = _get_slide(prs, slide_index)
+
+    # Find the shape to delete
+    shape_to_delete = _get_shape_by_id(slide, shape_id)
+
+    # Remove the shape element from its parent
+    sp = shape_to_delete._element # Access the underlying XML element
+    sp.getparent().remove(sp)   # Remove the element from the shapes collection
+
+    _save_presentation(prs, filename)
+    return f"Deleted shape with ID {shape_id} from slide {slide_index} in '{filename}'."
+
+@mcp.tool()
+def modify_shape(
+    filename: str,
+    slide_index: int,
+    shape_id: int,
+    text: Optional[str] = None,
+    left_inches: Optional[float] = None,
+    top_inches: Optional[float] = None,
+    width_inches: Optional[float] = None,
+    height_inches: Optional[float] = None,
+    font_size_pt: Optional[int] = None,
+    bold: Optional[bool] = None,
+    fill_color_rgb: Optional[Tuple[int, int, int]] = None,
+    line_color_rgb: Optional[Tuple[int, int, int]] = None,
+    line_width_pt: Optional[float] = None
+) -> str:
+    """
+    Modifies properties of an existing shape identified by its ID.
+    Allows changing text, position, size, font attributes, fill color, and line style.
+    Only provided parameters are changed.
+
+    Args:
+        filename: The presentation filename.
+        slide_index: The 0-based index of the slide.
+        shape_id: The unique ID of the shape to modify.
+        text: New text content for the shape (replaces existing text).
+        left_inches: New horizontal position from the left edge (in inches).
+        top_inches: New vertical position from the top edge (in inches).
+        width_inches: New width (in inches).
+        height_inches: New height (in inches).
+        font_size_pt: New font size (in points) for all text in the shape.
+        bold: Set font bold state (True or False) for all text in the shape.
+        fill_color_rgb: Tuple of (R, G, B) values (0-255) for solid fill color.
+        line_color_rgb: Tuple of (R, G, B) values (0-255) for line color.
+        line_width_pt: New line width (in points).
+
+    Returns:
+        Confirmation message summarizing the changes made.
+    """
+    prs = _load_presentation(filename)
+    slide = _get_slide(prs, slide_index)
+    shape = _get_shape_by_id(slide, shape_id)
+    changes_made = []
+
+    # Modify Position/Size
+    if left_inches is not None:
+        shape.left = Inches(left_inches)
+        changes_made.append("position (left)")
+    if top_inches is not None:
+        shape.top = Inches(top_inches)
+        changes_made.append("position (top)")
+    if width_inches is not None:
+        shape.width = Inches(width_inches)
+        changes_made.append("size (width)")
+    if height_inches is not None:
+        shape.height = Inches(height_inches)
+        changes_made.append("size (height)")
+
+    # Modify Text and Font (if shape has text frame)
+    if shape.has_text_frame:
+        if text is not None:
+            tf = shape.text_frame
+            tf.clear() # Clear existing paragraphs before adding new text
+            # Handle multi-line text properly
+            lines = text.split('\n')
+            tf.text = lines[0]
+            for line in lines[1:]:
+                p = tf.add_paragraph()
+                p.text = line
+            tf.word_wrap = True # Ensure word wrap is enabled
+            changes_made.append("text content")
+
+        font_changed = False
+        if font_size_pt is not None:
+            for p in shape.text_frame.paragraphs:
+                p.font.size = Pt(font_size_pt)
+            font_changed = True
+        if bold is not None:
+            for p in shape.text_frame.paragraphs:
+                p.font.bold = bold
+            font_changed = True
+        if font_changed:
+             changes_made.append("font attributes (size/bold)")
+
+    # Modify Fill Color
+    if fill_color_rgb is not None:
+        if len(fill_color_rgb) == 3:
+            fill = shape.fill
+            fill.solid()
+            fill.fore_color.rgb = RGBColor(*fill_color_rgb)
+            changes_made.append("fill color")
+        else:
+            print(f"Warning: Invalid RGB tuple {fill_color_rgb} for fill color. Expected (R, G, B).")
+
+    # Modify Line Style
+    line_changed = False
+    line = shape.line
+    if line_color_rgb is not None:
+        if len(line_color_rgb) == 3:
+            line.color.rgb = RGBColor(*line_color_rgb)
+            line_changed = True
+        else:
+             print(f"Warning: Invalid RGB tuple {line_color_rgb} for line color. Expected (R, G, B).")
+    if line_width_pt is not None:
+        line.width = Pt(line_width_pt)
+        line_changed = True
+    if line_changed:
+        changes_made.append("line style (color/width)")
+
+    if not changes_made:
+        return f"No valid modifications specified for shape ID {shape_id} on slide {slide_index}."
+
+    _save_presentation(prs, filename)
+    return f"Modified shape ID {shape_id} on slide {slide_index}: updated {', '.join(changes_made)}."
 
 @mcp.tool()
 def add_picture(
@@ -349,8 +576,10 @@ async def get_slide_content_description(filename: str, slide_index: str) -> str:
         # Use name attribute if available (e.g., for MSO_SHAPE enums), otherwise use string representation
         type_name = getattr(shape_type, 'name', str(shape_type))
         desc = f"Shape {i}: Type={type_name}"
+        # Include the unique shape ID
+        desc += f", ID={shape.shape_id}"
         try:
-            desc += f", Left={shape.left.inches:.2f}\", Top={shape.top.inches:.2f}\", Width={shape.width.inches:.2f}\", Height={shape.height.inches:.2f}\""
+             desc += f", Left={shape.left.inches:.2f}\", Top={shape.top.inches:.2f}\", Width={shape.width.inches:.2f}\", Height={shape.height.inches:.2f}\""
         except AttributeError:
              desc += " (Position/Size not available)" # Handle shapes without these properties if they exist
 

@@ -11,6 +11,9 @@ from server import (
     create_or_clear_presentation,
     add_slide,
     add_shape,
+    add_connector,
+    delete_shape,
+    modify_shape,
     get_slide_content_description,
     get_slide_image,
     SAVE_DIR,
@@ -186,6 +189,133 @@ async def test_get_slide_image():
                 os.remove(TEST_FILE_PATH)
             except OSError as e:
                 print(f"Error removing test file {TEST_FILE_PATH}: {e}")
+
+@pytest.mark.asyncio
+async def test_add_connector():
+    """
+    Tests adding a connector between two shapes.
+    """
+    if TEST_FILE_PATH.exists():
+        os.remove(TEST_FILE_PATH)
+
+    try:
+        # Setup
+        create_or_clear_presentation(TEST_FILENAME)
+        add_slide(TEST_FILENAME, layout_index=6)
+        # Add shapes and get their IDs from the return message
+        msg1 = add_shape(TEST_FILENAME, 0, "RECTANGLE", 1, 1, 1, 1, "Start")
+        msg2 = add_shape(TEST_FILENAME, 0, "OVAL", 4, 1, 1, 1, "End")
+
+        start_id = int(msg1.split("(ID: ")[1].split(")")[0])
+        end_id = int(msg2.split("(ID: ")[1].split(")")[0])
+
+        # Execute
+        conn_msg = add_connector(TEST_FILENAME, 0, start_id, end_id)
+
+        # Verify
+        description = await get_slide_content_description(TEST_FILENAME, "0")
+        # Connectors often appear as Type=LINE or might be counted in total shapes
+        assert "Shape 2: Type=LINE" in description or "Number of Shapes: 3" in description, "Connector shape not found in description"
+        assert f"Added ELBOW connector" in conn_msg
+        assert f"from shape {start_id}" in conn_msg
+        assert f"to shape {end_id}" in conn_msg
+
+    finally:
+        if TEST_FILE_PATH.exists():
+            try: os.remove(TEST_FILE_PATH)
+            except OSError as e: print(f"Error removing test file {TEST_FILE_PATH}: {e}")
+
+
+@pytest.mark.asyncio
+async def test_delete_shape():
+    """
+    Tests deleting a shape from a slide.
+    """
+    if TEST_FILE_PATH.exists():
+        os.remove(TEST_FILE_PATH)
+
+    try:
+        # Setup
+        create_or_clear_presentation(TEST_FILENAME)
+        add_slide(TEST_FILENAME, layout_index=6)
+        msg1 = add_shape(TEST_FILENAME, 0, "RECTANGLE", 1, 1, 1, 1, "Keep")
+        msg2 = add_shape(TEST_FILENAME, 0, "OVAL", 4, 1, 1, 1, "DeleteMe")
+        keep_id = int(msg1.split("(ID: ")[1].split(")")[0])
+        delete_id = int(msg2.split("(ID: ")[1].split(")")[0])
+
+        # Execute
+        delete_msg = delete_shape(TEST_FILENAME, 0, delete_id)
+
+        # Verify
+        description = await get_slide_content_description(TEST_FILENAME, "0")
+        assert f"ID={delete_id}" not in description, "Deleted shape ID still found in description"
+        assert "DeleteMe" not in description, "Deleted shape text still found"
+        assert f"ID={keep_id}" in description, "Kept shape ID not found"
+        assert "Keep" in description, "Kept shape text not found"
+        assert "Number of Shapes: 1" in description, "Shape count after deletion is not 1"
+        assert f"Deleted shape with ID {delete_id}" in delete_msg
+
+    finally:
+        if TEST_FILE_PATH.exists():
+            try: os.remove(TEST_FILE_PATH)
+            except OSError as e: print(f"Error removing test file {TEST_FILE_PATH}: {e}")
+
+
+@pytest.mark.asyncio
+async def test_modify_shape():
+    """
+    Tests modifying properties of an existing shape.
+    """
+    if TEST_FILE_PATH.exists():
+        os.remove(TEST_FILE_PATH)
+
+    try:
+        # Setup
+        create_or_clear_presentation(TEST_FILENAME)
+        add_slide(TEST_FILENAME, layout_index=6)
+        msg1 = add_shape(TEST_FILENAME, 0, "RECTANGLE", 1, 1, 2, 1, "Original Text")
+        shape_id = int(msg1.split("(ID: ")[1].split(")")[0])
+
+        # Execute modifications
+        mod_msg1 = modify_shape(
+            filename=TEST_FILENAME,
+            slide_index=0,
+            shape_id=shape_id,
+            text="New Text",
+            left_inches=0.5,
+            top_inches=0.5
+        )
+        mod_msg2 = modify_shape(
+            filename=TEST_FILENAME,
+            slide_index=0,
+            shape_id=shape_id,
+            width_inches=3.0,
+            height_inches=1.5,
+            # fill_color_rgb=(255, 0, 0) # Verifying color via description is hard
+        )
+
+        # Verify
+        description = await get_slide_content_description(TEST_FILENAME, "0")
+
+        # Check modification messages (order-independent, without repeating 'updated')
+        assert "text content" in mod_msg1
+        assert "position (left)" in mod_msg1
+        assert "position (top)" in mod_msg1
+        assert "size (width)" in mod_msg2
+        assert "size (height)" in mod_msg2
+
+        # Check final state via description
+        assert "Original Text" not in description, "Original text still found after modify"
+        assert "Text='New Text'" in description, "New text not found after modify"
+        assert "Left=0.50" in description, "Left position not modified correctly"
+        assert "Top=0.50" in description, "Top position not modified correctly"
+        assert "Width=3.00" in description, "Width not modified correctly"
+        assert "Height=1.50" in description, "Height not modified correctly"
+
+    finally:
+        if TEST_FILE_PATH.exists():
+            try: os.remove(TEST_FILE_PATH)
+            except OSError as e: print(f"Error removing test file {TEST_FILE_PATH}: {e}")
 
 @pytest.mark.asyncio
 async def test_get_pptx_file():
