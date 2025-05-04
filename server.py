@@ -417,8 +417,8 @@ def modify_shape(
     height_inches: Optional[float] = None,
     font_size_pt: Optional[int] = None,
     bold: Optional[bool] = None,
-    fill_color_rgb: Optional[Tuple[int, int, int]] = None,
-    line_color_rgb: Optional[Tuple[int, int, int]] = None,
+    fill_color_rgb: Optional[List[int]] = None,
+    line_color_rgb: Optional[List[int]] = None,
     line_width_pt: Optional[float] = None
 ) -> str:
     """
@@ -437,8 +437,8 @@ def modify_shape(
         height_inches: New height (in inches).
         font_size_pt: New font size (in points) for all text in the shape.
         bold: Set font bold state (True or False) for all text in the shape.
-        fill_color_rgb: Tuple of (R, G, B) values (0-255) for solid fill color.
-        line_color_rgb: Tuple of (R, G, B) values (0-255) for line color.
+        fill_color_rgb: List of [R, G, B] values (0-255) for solid fill color.
+        line_color_rgb: List of [R, G, B] values (0-255) for line color.
         line_width_pt: New line width (in points).
 
     Returns:
@@ -497,7 +497,7 @@ def modify_shape(
             fill.fore_color.rgb = RGBColor(*fill_color_rgb)
             changes_made.append("fill color")
         else:
-            print(f"Warning: Invalid RGB tuple {fill_color_rgb} for fill color. Expected (R, G, B).")
+            print(f"Warning: Invalid list {fill_color_rgb} for fill color. Expected [R, G, B] (length 3).")
 
     # Modify Line Style
     line_changed = False
@@ -507,7 +507,7 @@ def modify_shape(
             line.color.rgb = RGBColor(*line_color_rgb)
             line_changed = True
         else:
-             print(f"Warning: Invalid RGB tuple {line_color_rgb} for line color. Expected (R, G, B).")
+             print(f"Warning: Invalid list {line_color_rgb} for line color. Expected [R, G, B] (length 3).")
     if line_width_pt is not None:
         line.width = Pt(line_width_pt)
         line_changed = True
