@@ -18,6 +18,7 @@ from server import (
     get_slide_image,
     SAVE_DIR,
     get_pptx_file,
+    batch_update,
 )
 
 # Define the test filename
@@ -351,3 +352,106 @@ async def test_get_pptx_file():
                 os.remove(TEST_FILE_PATH)
             except OSError as e:
                 print(f"Error removing test file {TEST_FILE_PATH}: {e}")
+
+@pytest.mark.asyncio
+async def test_batch_update_flow():
+    """
+    Tests the batch_update tool with a sequence of operations:
+    - Create a slide
+    - Add two shapes to the slide using temporary IDs
+    - Modify one shape
+    - Add a connector between them
+    - Verifies the final slide content and batch replies.
+    """
+    test_batch_filename = "test_batch_presentation.pptx"
+    test_batch_filepath = SAVE_DIR / test_batch_filename
+
+    if test_batch_filepath.exists():
+        os.remove(test_batch_filepath)
+
+    try:
+        # 1. Initial presentation creation (can be part of batch, but good to separate concerns for test clarity)
+        create_or_clear_presentation(test_batch_filename)
+
+        # 2. Define the batch requests
+        requests = [
+            {
+                "create_slide": {
+                    "layout_index": 6,  # Blank layout
+                    "slide_object_id": "mySlide1"
+                }
+            },
+            {
+                "add_shape": {
+                    "page_object_id": "mySlide1",
+                    "shape_type_name": "RECTANGLE",
+                    "left_inches": 1.0, "top_inches": 1.0, "width_inches": 2.0, "height_inches": 1.0,
+                    "text": "Initial Box 1",
+                    "shape_object_id": "box1"
+                }
+            },
+            {
+                "add_shape": {
+                    "page_object_id": "mySlide1",
+                    "shape_type_name": "OVAL",
+                    "left_inches": 4.0, "top_inches": 1.0, "width_inches": 2.0, "height_inches": 1.5,
+                    "text": "Box 2",
+                    "shape_object_id": "box2"
+                }
+            },
+            {
+                "modify_shape": {
+                    "page_object_id": "mySlide1",
+                    "shape_object_id": "box1",
+                    "text": "Modified Box 1 Text",
+                    "fill_color_rgb": [255, 0, 0] # Red
+                }
+            },
+            {
+                "add_connector": {
+                    "page_object_id": "mySlide1",
+                    "start_shape_object_id": "box1",
+                    "end_shape_object_id": "box2",
+                    "connector_type_name": "ELBOW",
+                    "shape_object_id": "connector1"
+                }
+            }
+        ]
+
+        # 3. Execute batch_update
+        batch_result = batch_update(test_batch_filename, requests)
+
+        # 4. Verify batch_update response
+        assert batch_result is not None, "Batch result should not be None"
+        assert batch_result.get("presentation_id") == test_batch_filename
+        replies = batch_result.get("replies", [])
+        assert len(replies) == len(requests), "Number of replies should match number of requests"
+
+        assert "create_slide" in replies[0] and replies[0]["create_slide"].get("object_id") == "mySlide1"
+        assert "add_shape" in replies[1] and replies[1]["add_shape"].get("object_id") == "box1"
+        assert "add_shape" in replies[2] and replies[2]["add_shape"].get("object_id") == "box2"
+        assert "modify_shape" in replies[3] and replies[3]["modify_shape"].get("object_id") == "box1"
+        assert "add_connector" in replies[4] and replies[4]["add_connector"].get("object_id") == "connector1"
+
+        # 5. Verify actual slide content
+        # The new slide will be at index 0 as it's the first one added after creation
+        description = await get_slide_content_description(test_batch_filename, "0")
+
+        assert "Number of Shapes: 3" in description # Two shapes + one connector
+        assert "Text='Modified Box 1 Text'" in description
+        assert "Text='Box 2'" in description
+        # Check for connector - its type might be AUTO_SHAPE or LINE depending on pptx interpretation
+        # Check based on IDs from description to be more robust
+        # We expect 3 shapes total. Their specific IDs are assigned by python-pptx, not our temporary IDs.
+
+        # Example of a more robust check if needed (requires parsing shape IDs from description):
+        # shape_ids_in_desc = [int(s.split("ID=")[1].split(",")[0]) for s in description.split("\n") if "ID=" in s]
+        # assert len(shape_ids_in_desc) == 3
+
+    finally:
+        # --- Cleanup ---
+        if test_batch_filepath.exists():
+            try:
+                os.remove(test_batch_filepath)
+            except OSError as e:
+                print(f"Error removing test file {test_batch_filepath}: {e}")

@@ -7,12 +7,13 @@ import tempfile
 import shutil # For finding soffice
 import base64 # <-- Add this import
 from pathlib import Path
-from typing import Optional, List, Union, Tuple # <-- Add Tuple
+from typing import Optional, List, Union, Tuple, Dict, Any
 
 import pptx # Import the module directly
 from pptx.util import Inches, Pt
 from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.dml.color import RGBColor # <-- Add RGBColor
+from pptx.shapes.base import BaseShape
 
 from fastmcp import FastMCP, Image, Context
 from fastmcp.resources import FileResource
@@ -89,6 +90,9 @@ def _load_presentation(filename: str) -> pptx.Presentation: # Use qualified name
     if path.exists():
         try:
             return pptx.Presentation(str(path)) # Use qualified name
+        except pptx.exc.PackageNotFoundError: # Specific exception for file not found or not a zip file
+            # This can happen if the file is not a valid pptx or is corrupted in a way that it's not recognized as a zip
+            raise ValueError(f"File '{filename}' is not a valid PPTX file or is corrupted.")
         except Exception as e:
             # Catch other potential errors during loading (e.g., file corruption)
             raise ValueError(f"Error loading presentation '{filename}': {e}")
@@ -137,6 +141,61 @@ def _get_shape_by_id(slide: pptx.slide.Slide, shape_id: int):
         if shape.shape_id == shape_id:
             return shape
     raise ValueError(f"Shape with ID {shape_id} not found on slide {slide.slide_id}. Available IDs: {[s.shape_id for s in slide.shapes]}")
+
+# --- Helper functions for batch_update ---
+
+def _resolve_slide_obj(
+    prs: pptx.Presentation,
+    page_ref: Union[str, int],
+    object_map: Dict[str, Any],
+    filename: str
+) -> pptx.slide.Slide:
+    """Resolves a page reference (string ID or int index) to a Slide object."""
+    slide_obj: Optional[pptx.slide.Slide] = None
+    if isinstance(page_ref, int):
+        if 0 <= page_ref < len(prs.slides):
+            slide_obj = prs.slides[page_ref]
+        else:
+            raise ValueError(f"Invalid slide index {page_ref} for presentation '{filename}'. It has {len(prs.slides)} slides.")
+    elif isinstance(page_ref, str):
+        resolved_item = object_map.get(page_ref)
+        if isinstance(resolved_item, pptx.slide.Slide):
+            slide_obj = resolved_item
+        elif isinstance(resolved_item, int): # If we stored slide index by mistake for string ID
+             if 0 <= resolved_item < len(prs.slides):
+                slide_obj = prs.slides[resolved_item]
+             else:
+                raise ValueError(f"Resolved slide index {resolved_item} from ID '{page_ref}' is out of bounds for '{filename}'.")
+        else:
+            raise ValueError(f"Slide reference ID '{page_ref}' not found or not a slide in object_map for batch operation.")
+
+    if slide_obj is None: # Should be caught by earlier checks, but as a safeguard
+        raise ValueError(f"Could not resolve slide reference '{page_ref}'.")
+    return slide_obj
+
+def _resolve_shape_obj(
+    slide: pptx.slide.Slide,
+    shape_ref: Union[str, int],
+    object_map: Dict[str, Any]
+) -> BaseShape:
+    """Resolves a shape reference (string ID or int ID) to a Shape object."""
+    actual_shape_id: Optional[int] = None
+    if isinstance(shape_ref, int):
+        actual_shape_id = shape_ref
+    elif isinstance(shape_ref, str):
+        resolved_item = object_map.get(shape_ref)
+        if isinstance(resolved_item, int): # Shape IDs are ints
+            actual_shape_id = resolved_item
+        elif isinstance(resolved_item, BaseShape): # If we stored the object itself
+            actual_shape_id = resolved_item.shape_id
+        else:
+            raise ValueError(f"Shape reference ID '{shape_ref}' not found or not a shape ID in object_map for batch operation.")
+
+    if actual_shape_id is None:
+        raise ValueError(f"Could not determine actual shape ID from reference '{shape_ref}'.")
+
+    return _get_shape_by_id(slide, actual_shape_id) # _get_shape_by_id will raise if not found on slide
+
 
 # --- MCP Tools (Create, Add Slide, Add Elements - same as before) ---
 
@@ -805,6 +864,383 @@ def available_shapes() -> str:
         "FLOWCHART_MAGNETIC_DISK", "FLOWCHART_DIRECT_ACCESS_STORAGE", "FLOWCHART_DISPLAY"
     ]
     return f"Common shape names for `add_shape`: {', '.join(common_shapes)}. Many others exist."
+
+
+# --- Batch Update Tool ---
+
+@mcp.tool()
+def batch_update(filename: str, requests: List[Dict[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """
+    Performs a series of operations on a presentation in a single batch.
+    Similar to Google Slides API batchUpdate. Allows creating slides, adding shapes,
+    text, pictures, connectors, modifying and deleting shapes.
+    Operations are performed sequentially. If any operation fails,
+    the entire batch is aborted, and no changes are saved to the presentation file.
+
+    Args:
+        filename: The name of the presentation file (e.g., "my_presentation.pptx").
+        requests: A list of operation requests. Each request is a dictionary
+                  with a single key being the operation name (e.g., "create_slide")
+                  and its value being a dictionary of parameters for that operation.
+                  User-defined string "object_id"s (e.g. "slide_object_id", "shape_object_id")
+                  can be used to create temporary references to slides/shapes created
+                  within the same batch.
+
+    Returns:
+        A dictionary containing the "presentation_id" and a list of "replies",
+        one for each input request, echoing any "object_id" provided in the request.
+
+    Example of `requests` structure:
+    ```json
+    [
+        {
+            "create_slide": {
+                "layout_index": 6, // Blank layout
+                "slide_object_id": "newDiagramSlide" // User-defined ID for this new slide
+            }
+        },
+        {
+            "add_shape": {
+                "page_object_id": "newDiagramSlide", // Reference to the slide created above
+                "shape_type_name": "RECTANGLE",
+                "left_inches": 1.0, "top_inches": 1.0, "width_inches": 2.0, "height_inches": 1.0,
+                "text": "Step 1: Start",
+                "shape_object_id": "step1Rect" // User-defined ID for this shape
+            }
+        },
+        {
+            "add_textbox": {
+                "page_object_id": "newDiagramSlide",
+                "text": "Flowchart Title",
+                "left_inches": 1.0, "top_inches": 0.2, "width_inches": 8.0, "height_inches": 0.5,
+                "font_size_pt": 24,
+                "bold": true,
+                "shape_object_id": "titleBox"
+            }
+        },
+        {
+            "add_shape": {
+                "page_object_id": "newDiagramSlide",
+                "shape_type_name": "FLOWCHART_DECISION",
+                "left_inches": 1.0, "top_inches": 3.0, "width_inches": 2.0, "height_inches": 1.5,
+                "text": "Is condition met?",
+                "shape_object_id": "decision1"
+            }
+        },
+        {
+            "modify_shape": {
+                "page_object_id": "newDiagramSlide", // Slide containing the shape
+                "shape_object_id": "step1Rect",    // ID of the shape to modify
+                "text": "Step 1: Initialization",
+                "fill_color_rgb": [220, 220, 255] // Light blue fill
+            }
+        },
+        {
+            "add_connector": {
+                "page_object_id": "newDiagramSlide",
+                "start_shape_object_id": "step1Rect", // Connect from this shape
+                "end_shape_object_id": "decision1",   // To this shape
+                "connector_type_name": "ELBOW",
+                "shape_object_id": "connectorArrow1" // User-defined ID for the connector
+            }
+        },
+        {
+            "add_picture": {
+                "page_object_id": "newDiagramSlide",
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", // Example: 1x1 black pixel PNG
+                "left_inches": 5.0, "top_inches": 3.0, "width_inches": 1.0, "height_inches": 1.0,
+                "shape_object_id": "tinyImage"
+            }
+        },
+        {
+            "delete_shape": {
+                "page_object_id": "newDiagramSlide",
+                "shape_object_id": "titleBox" // Example: delete the title box we added earlier
+            }
+        }
+    ]
+    ```
+    """
+    prs = _load_presentation(filename)
+    object_map: Dict[str, Any] = {} # Stores user_string_id -> pptx.slide.Slide or shape_id (int)
+    replies: List[Dict[str, Any]] = []
+
+    # For atomicity: If we decide to work on a copy. For now, direct modification.
+    # If any step fails, an exception will be raised, and _save_presentation won't be called.
+
+    for req_idx, request_item in enumerate(requests):
+        if not isinstance(request_item, dict) or len(request_item) != 1:
+            raise ValueError(f"Request at index {req_idx} is malformed: {request_item}. Expected a dict with a single operation key.")
+
+        operation_name, params = list(request_item.items())[0]
+        if not isinstance(params, dict):
+            raise ValueError(f"Parameters for operation '{operation_name}' at index {req_idx} must be a dict: {params}")
+
+        current_reply: Dict[str, Any] = {}
+
+        try:
+            if operation_name == "create_slide":
+                layout_index = params.get("layout_index", 6) # Default to blank
+                slide_object_id = params.get("slide_object_id")
+
+                if not (0 <= layout_index < len(prs.slide_layouts)):
+                    raise ValueError(f"Invalid layout_index {layout_index}. Must be between 0 and {len(prs.slide_layouts) - 1}.")
+                slide_layout = prs.slide_layouts[layout_index]
+                new_slide = prs.slides.add_slide(slide_layout)
+
+                if slide_object_id:
+                    if not isinstance(slide_object_id, str):
+                        raise ValueError(f"'{operation_name}' param 'slide_object_id' must be a string.")
+                    object_map[slide_object_id] = new_slide # Store the Slide object
+                    current_reply = {"create_slide": {"object_id": slide_object_id}}
+                else:
+                    current_reply = {"create_slide": {}} # No specific ID to echo
+
+            elif operation_name in ["add_shape", "add_textbox"]:
+                page_ref = params.get("page_object_id")
+                if page_ref is None: raise ValueError(f"'{operation_name}' requires 'page_object_id'.")
+                target_slide = _resolve_slide_obj(prs, page_ref, object_map, filename)
+
+                left_in = params.get("left_inches")
+                top_in = params.get("top_inches")
+                width_in = params.get("width_inches")
+                height_in = params.get("height_inches")
+                text = params.get("text")
+                shape_object_id = params.get("shape_object_id")
+
+                if any(v is None for v in [left_in, top_in, width_in, height_in]):
+                    raise ValueError(f"'{operation_name}' requires 'left_inches', 'top_inches', 'width_inches', 'height_inches'.")
+
+                left, top = Inches(left_in), Inches(top_in)
+                width, height = Inches(width_in), Inches(height_in)
+                
+                new_shape: Optional[BaseShape] = None
+                if operation_name == "add_textbox":
+                    new_shape = target_slide.shapes.add_textbox(left, top, width, height)
+                    if text is not None:
+                        tf = new_shape.text_frame
+                        tf.clear()
+                        lines = str(text).split('\\n') # Allow escaped newlines in JSON
+                        p = tf.paragraphs[0]
+                        p.text = lines[0]
+                        for line in lines[1:]:
+                            p = tf.add_paragraph()
+                            p.text = line
+                        tf.word_wrap = True
+
+                    font_size_pt = params.get("font_size_pt")
+                    bold = params.get("bold")
+                    for p in new_shape.text_frame.paragraphs:
+                        if font_size_pt is not None and font_size_pt > 0:
+                            p.font.size = Pt(font_size_pt)
+                        if bold is not None:
+                            p.font.bold = bool(bold)
+                
+                elif operation_name == "add_shape":
+                    shape_type_name = params.get("shape_type_name")
+                    if not shape_type_name: raise ValueError("'add_shape' requires 'shape_type_name'.")
+                    shape_enum = _parse_shape_type(shape_type_name)
+                    new_shape = target_slide.shapes.add_shape(shape_enum, left, top, width, height)
+                    if text is not None:
+                        tf = new_shape.text_frame
+                        tf.clear()
+                        lines = str(text).split('\\n')
+                        p = tf.paragraphs[0]
+                        p.text = lines[0]
+                        for line in lines[1:]:
+                            p = tf.add_paragraph()
+                            p.text = line
+                        tf.word_wrap = True
+                
+                if new_shape and shape_object_id:
+                    if not isinstance(shape_object_id, str):
+                        raise ValueError(f"'{operation_name}' param 'shape_object_id' must be a string.")
+                    object_map[shape_object_id] = new_shape.shape_id # Store actual int shape_id
+                    current_reply = {operation_name: {"object_id": shape_object_id}}
+                elif new_shape :
+                     current_reply = {operation_name: {"shape_id": new_shape.shape_id}} # return actual ID if no temp was given
+                else: # Should not happen if params are validated
+                    current_reply = {operation_name: {}}
+
+
+            elif operation_name == "add_picture":
+                page_ref = params.get("page_object_id")
+                if page_ref is None: raise ValueError(f"'add_picture' requires 'page_object_id'.")
+                target_slide = _resolve_slide_obj(prs, page_ref, object_map, filename)
+
+                image_base64 = params.get("image_base64")
+                if not image_base64 or not isinstance(image_base64, str):
+                    raise ValueError("'add_picture' requires 'image_base64' as a non-empty string.")
+                
+                try:
+                    image_bytes = base64.b64decode(image_base64)
+                except Exception as e:
+                    raise ValueError(f"Invalid base64 data for image: {e}")
+
+                image_stream = io.BytesIO(image_bytes)
+                left_in = params.get("left_inches")
+                top_in = params.get("top_inches")
+                width_in = params.get("width_inches") # Optional
+                height_in = params.get("height_inches") # Optional
+                shape_object_id = params.get("shape_object_id")
+
+                if left_in is None or top_in is None:
+                     raise ValueError("'add_picture' requires 'left_inches' and 'top_inches'.")
+
+                left, top = Inches(left_in), Inches(top_in)
+                width = Inches(width_in) if width_in is not None else None
+                height = Inches(height_in) if height_in is not None else None
+
+                new_pic = target_slide.shapes.add_picture(image_stream, left, top, width=width, height=height)
+
+                if shape_object_id:
+                    if not isinstance(shape_object_id, str):
+                        raise ValueError(f"'add_picture' param 'shape_object_id' must be a string.")
+                    object_map[shape_object_id] = new_pic.shape_id
+                    current_reply = {"add_picture": {"object_id": shape_object_id}}
+                else:
+                    current_reply = {"add_picture": {"shape_id": new_pic.shape_id}}
+
+
+            elif operation_name == "modify_shape":
+                page_ref = params.get("page_object_id") # Needed to locate the shape by its ID
+                shape_ref = params.get("shape_object_id")
+                if page_ref is None: raise ValueError(f"'modify_shape' requires 'page_object_id'.")
+                if shape_ref is None: raise ValueError(f"'modify_shape' requires 'shape_object_id'.")
+
+                target_slide = _resolve_slide_obj(prs, page_ref, object_map, filename)
+                shape_to_modify = _resolve_shape_obj(target_slide, shape_ref, object_map)
+
+                # Apply modifications similar to the `modify_shape` tool
+                changes_made = [] # For detailed reply, if needed
+                if "text" in params:
+                    if shape_to_modify.has_text_frame:
+                        tf = shape_to_modify.text_frame
+                        tf.clear()
+                        lines = str(params["text"]).split('\\n')
+                        tf.text = lines[0] # First line
+                        for line in lines[1:]:
+                            p = tf.add_paragraph()
+                            p.text = line
+                        tf.word_wrap = True
+                        changes_made.append("text")
+                if "left_inches" in params: shape_to_modify.left = Inches(params["left_inches"]); changes_made.append("left")
+                if "top_inches" in params: shape_to_modify.top = Inches(params["top_inches"]); changes_made.append("top")
+                if "width_inches" in params: shape_to_modify.width = Inches(params["width_inches"]); changes_made.append("width")
+                if "height_inches" in params: shape_to_modify.height = Inches(params["height_inches"]); changes_made.append("height")
+
+                if shape_to_modify.has_text_frame:
+                    if "font_size_pt" in params and params["font_size_pt"] > 0:
+                        for p in shape_to_modify.text_frame.paragraphs: p.font.size = Pt(params["font_size_pt"])
+                        changes_made.append("font_size")
+                    if "bold" in params:
+                        for p in shape_to_modify.text_frame.paragraphs: p.font.bold = bool(params["bold"])
+                        changes_made.append("font_bold")
+                
+                if "fill_color_rgb" in params:
+                    rgb = params["fill_color_rgb"]
+                    if isinstance(rgb, list) and len(rgb) == 3:
+                        shape_to_modify.fill.solid()
+                        shape_to_modify.fill.fore_color.rgb = RGBColor(*rgb)
+                        changes_made.append("fill_color")
+                    else: print(f"Warning: Invalid fill_color_rgb {rgb} for batch op modify_shape.")
+
+                if "line_color_rgb" in params or "line_width_pt" in params:
+                    line = shape_to_modify.line
+                    if "line_color_rgb" in params:
+                        rgb_line = params["line_color_rgb"]
+                        if isinstance(rgb_line, list) and len(rgb_line) == 3:
+                            line.color.rgb = RGBColor(*rgb_line)
+                            changes_made.append("line_color")
+                        else: print(f"Warning: Invalid line_color_rgb {rgb_line} for batch op modify_shape.")
+                    if "line_width_pt" in params and params["line_width_pt"] > 0:
+                        line.width = Pt(params["line_width_pt"])
+                        changes_made.append("line_width")
+                
+                # Echo object_id if it was a string reference
+                obj_id_reply_val = shape_ref if isinstance(shape_ref, str) else shape_to_modify.shape_id
+                current_reply = {"modify_shape": {"object_id": obj_id_reply_val, "changes": changes_made}}
+
+
+            elif operation_name == "add_connector":
+                page_ref = params.get("page_object_id")
+                start_shape_ref = params.get("start_shape_object_id")
+                end_shape_ref = params.get("end_shape_object_id")
+                if None in [page_ref, start_shape_ref, end_shape_ref]:
+                    raise ValueError("'add_connector' requires 'page_object_id', 'start_shape_object_id', and 'end_shape_object_id'.")
+
+                target_slide = _resolve_slide_obj(prs, page_ref, object_map, filename)
+                start_shape = _resolve_shape_obj(target_slide, start_shape_ref, object_map)
+                end_shape = _resolve_shape_obj(target_slide, end_shape_ref, object_map)
+
+                connector_type_name = params.get("connector_type_name", "ELBOW")
+                start_conn_idx = params.get("start_connection_point_idx", 3)
+                end_conn_idx = params.get("end_connection_point_idx", 1)
+                shape_object_id = params.get("shape_object_id") # For the connector itself
+
+                try:
+                    connector_enum = getattr(MSO_CONNECTOR, connector_type_name.upper())
+                except AttributeError:
+                    raise ValueError(f"Unknown connector type '{connector_type_name}'. Try: STRAIGHT, ELBOW, CURVE.")
+
+                # Initial arbitrary placement for connector
+                connector = target_slide.shapes.add_connector(connector_enum, Inches(0), Inches(0), Inches(1), Inches(1))
+                
+                try:
+                    connector.begin_connect(start_shape, start_conn_idx)
+                except Exception as e: # Catch specific pptx exceptions if known, e.g. IndexError for bad conn_idx
+                    print(f"Warning: Batch 'add_connector': Could not connect start to shape {start_shape.shape_id} (ref '{start_shape_ref}') at point {start_conn_idx}. Error: {e}. Attempting center.")
+                    try: connector.begin_connect(start_shape, 0) # Fallback to center
+                    except Exception as e2: print(f"Batch 'add_connector': Fallback start connection also failed: {e2}")
+                
+                try:
+                    connector.end_connect(end_shape, end_conn_idx)
+                except Exception as e:
+                    print(f"Warning: Batch 'add_connector': Could not connect end to shape {end_shape.shape_id} (ref '{end_shape_ref}') at point {end_conn_idx}. Error: {e}. Attempting center.")
+                    try: connector.end_connect(end_shape, 0) # Fallback to center
+                    except Exception as e2: print(f"Batch 'add_connector': Fallback end connection also failed: {e2}")
+
+                if shape_object_id:
+                    if not isinstance(shape_object_id, str):
+                        raise ValueError(f"'add_connector' param 'shape_object_id' must be a string.")
+                    object_map[shape_object_id] = connector.shape_id
+                    current_reply = {"add_connector": {"object_id": shape_object_id}}
+                else:
+                    current_reply = {"add_connector": {"shape_id": connector.shape_id}}
+            
+            elif operation_name == "delete_shape":
+                page_ref = params.get("page_object_id")
+                shape_ref = params.get("shape_object_id")
+                if page_ref is None: raise ValueError(f"'delete_shape' requires 'page_object_id'.")
+                if shape_ref is None: raise ValueError(f"'delete_shape' requires 'shape_object_id'.")
+
+                target_slide = _resolve_slide_obj(prs, page_ref, object_map, filename)
+                shape_to_delete = _resolve_shape_obj(target_slide, shape_ref, object_map)
+
+                sp_el = shape_to_delete._element
+                sp_el.getparent().remove(sp_el)
+                
+                # If shape_ref was a string ID, remove from object_map as it's gone
+                if isinstance(shape_ref, str) and shape_ref in object_map:
+                    del object_map[shape_ref]
+                
+                current_reply = {"delete_shape": {"object_id": shape_ref if isinstance(shape_ref, str) else shape_to_delete.shape_id}}
+
+            else:
+                raise ValueError(f"Unsupported operation in batch: '{operation_name}'")
+
+        except Exception as e:
+            # Attach context to the error
+            err_msg = f"Error processing batch request item {req_idx} ('{operation_name}'): {e}"
+            # Optionally include params in error for debugging, be careful with sensitive data
+            # err_msg += f" Parameters: {params}"
+            print(f"ERROR in batch_update: {err_msg}", file=sys.stderr)
+            raise ValueError(err_msg) from e # Re-raise to abort batch
+
+        replies.append(current_reply if current_reply else {operation_name: {}}) # Ensure a reply for each request
+
+    _save_presentation(prs, filename)
+    return {"presentation_id": filename, "replies": replies}
 
 
 # --- Running the Server ---
