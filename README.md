@@ -20,16 +20,22 @@ A FastMCP-powered server for programmatically creating, editing, and rendering P
 - [Pillow](https://python-pillow.org/)
 - [FastMCP](https://github.com/ContextualAI/fastmcp)
 - **LibreOffice** (for slide image rendering; must be installed separately and available in your system PATH)
+- [python-dotenv](https://pypi.org/project/python-dotenv/) (for development environment configuration)
 
 ## Installation
 
 1. Install Python dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install .
    ```
-   *(Or see `pyproject.toml` for dependencies)*
+   *(Installs from `pyproject.toml` for dependencies)*
 
-2. **Install LibreOffice** (for image rendering):
+2. Optional: Install python-dotenv for development environment variables:
+   ```bash
+   pip install python-dotenv
+   ```
+
+3. **Install LibreOffice** (for image rendering):
    - Linux: `sudo pacman -S libreoffice-fresh` or `sudo apt install libreoffice`
    - macOS: `brew install --cask libreoffice`
    - Windows: [Download from libreoffice.org](https://www.libreoffice.org/download/download/)
@@ -40,6 +46,7 @@ Start the server:
 ```bash
 python server.py
 ```
+For development with environment variables:
 
 You can set the server's host and port using environment variables:
 - `HOST` (default: `127.0.0.1`)
@@ -49,6 +56,19 @@ For example, to run on all interfaces and port 9000:
 ```bash
 HOST=0.0.0.0 PORT=9000 python server.py
 ```
+OR
+
+Create/edit the `.env` file in the project root:
+For example, to run on all interfaces and port 9000:
+```
+HOST=0.0.0.0
+PORT=9000
+```
+
+Load the environment variables when starting the server:
+   ```bash
+   python server.py
+   ```
 
 Or (for development with FastMCP):
 ```bash
