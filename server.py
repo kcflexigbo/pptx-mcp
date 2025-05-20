@@ -17,11 +17,13 @@ from pptx.shapes.base import BaseShape
 
 from fastmcp import FastMCP, Image, Context
 from fastmcp.resources import FileResource
+from dotenv import load_dotenv
 
 # --- Configuration ---
 # Directory to store generated presentations
 SAVE_DIR = Path("./presentations")
 SAVE_DIR.mkdir(exist_ok=True)
+load_dotenv()
 
 # --- !! IMPORTANT !! LibreOffice Dependency ---
 # Set this if 'soffice' is not in your system PATH
